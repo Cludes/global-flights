@@ -73,6 +73,7 @@ class FlightMap {
       maxBounds: [[-85, -180], [85, 180]], maxBoundsViscosity: 1.0,
     });
     L.tileLayer(CONFIG.TILE, { attribution: CONFIG.ATTR, subdomains: 'abcd', maxZoom: 20, noWrap: true }).addTo(this.map);
+    this.fitWidth();
     this.updateTerminator();
     setInterval(() => this.updateTerminator(), 60000);
 
@@ -86,11 +87,19 @@ class FlightMap {
     this.map.getContainer().appendChild(this.hoverEl);
     this.sizeCanvas();
 
-    this.map.on('resize', () => this.sizeCanvas());
+    this.map.on('resize', () => { this.sizeCanvas(); this.fitWidth(); });
     this.map.on('moveend zoomend', () => this.syncVisible());
     this.map.on('click', (e) => this.onClick(e));
     this.map.on('mousemove', (e) => this.onHover(e));
     this.map.on('mouseout', () => { this.hoverEl.style.display = 'none'; });
+  }
+
+  // Keep the no-wrap world filling the viewport width (no dead margins) at any screen size.
+  fitWidth() {
+    const w = this.map.getSize().x;
+    const mz = Math.ceil(Math.log2(w / 256));
+    this.map.setMinZoom(mz);
+    if (this.map.getZoom() < mz) this.map.setView(this.map.getCenter(), mz, { animate: false });
   }
 
   sizeCanvas() {
