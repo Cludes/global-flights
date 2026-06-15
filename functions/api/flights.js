@@ -16,6 +16,7 @@ const CACHE_TTL = 25;
 // [lat, lon, radius_nm] across the world's busy aviation regions. Kept to a count where
 // points x 2 sources stays under Cloudflare's 50-subrequest/request limit.
 const POINTS = [
+  [-33, 149, 250], [-31, 121, 250], [-41, 174, 250],                        // Australia (E + W) + New Zealand (first, so the burst never starves them)
   [53, 0, 250], [48, 9, 250], [41, 2, 250], [52, 21, 250],                  // Europe
   [55, 38, 250],                                                            // Russia (Moscow)
   [25, 52, 250], [28, 77, 250], [13, 78, 250],                              // Middle East + India
@@ -23,8 +24,19 @@ const POINTS = [
   [43, -74, 250], [33, -86, 250], [39, -98, 250], [37, -119, 250], [50, -110, 250], // North America
   [-23, -46, 250], [-34, -62, 250],                                         // South America
   [30, 31, 250], [-29, 25, 250],                                            // Africa
-  [-33, 149, 250], [-31, 121, 250], [-41, 174, 250],                        // Australia (E + W) + New Zealand
 ];
+
+// Fetch points in small concurrent batches - one big 24-wide burst gets rate-limited by the
+// aggregators (dropping random regions like Australia); batches of 8 are the proven-safe size.
+async function fetchAll() {
+  const BATCH = 8;
+  const out = [];
+  for (let i = 0; i < POINTS.length; i += BATCH) {
+    const res = await Promise.all(POINTS.slice(i, i + BATCH).map(fetchPoint));
+    out.push(...res);
+  }
+  return out;
+}
 
 const HOSTS = [
   (la, lo, d) => `https://opendata.adsb.fi/api/v2/lat/${la}/lon/${lo}/dist/${d}`,
@@ -53,7 +65,7 @@ export async function onRequestGet(context) {
   const cached = await cache.match(cacheKey);
   if (cached) return cors(cached);
 
-  const results = await Promise.all(POINTS.map(fetchPoint));
+  const results = await fetchAll();
 
   const seen = new Set();
   const aircraft = [];
