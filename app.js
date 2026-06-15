@@ -1,20 +1,14 @@
 'use strict';
 
 const CONFIG = {
-  CENTER: [20, 10],
+  CENTER: [25, 10],
   ZOOM: 3, MIN_ZOOM: 2, MAX_ZOOM: 11,
   API: '/api/flights',
-  REFRESH_MS: 25000,         // matches the Worker's 25s edge cache (live keyless feed)
-  MAX_MARKERS: 1200,         // cap rendered planes for performance
+  REFRESH_MS: 25000,
   TRAIL_MAX: 30,
   TILE: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
   ATTR: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a> | ADS-B: <a href="https://adsb.fi">adsb.fi</a> / <a href="https://airplanes.live">airplanes.live</a>',
 };
-
-const PLANE_SVG =
-  '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">' +
-  '<path d="M22 16v-2l-8.5-5V3.5C13.5 2.67 12.83 2 12 2s-1.5.67-1.5 1.5V9L2 14v2l8.5-2.5V19L8 20.5V22l4-1 4 1v-1.5L13.5 19v-3.5L22 16z"/>' +
-  '</svg>';
 
 function altColor(alt) {
   if (alt == null) return '#9aa7b5';
@@ -28,24 +22,23 @@ function altColor(alt) {
 // ── Solar terminator (night-side polygon) ──────────────────────────────────────
 const D2R = Math.PI / 180, R2D = 180 / Math.PI;
 function sunPos(date) {
-  const jd = date.getTime() / 86400000 + 2440587.5;
-  const T = jd - 2451545.0;
+  const jd = date.getTime() / 86400000 + 2440587.5, T = jd - 2451545.0;
   const g = (357.529 + 0.98560028 * T) * D2R;
   const q = 280.459 + 0.98564736 * T;
   const L = (q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * D2R;
   const e = (23.439 - 0.00000036 * T) * D2R;
-  const ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)) * R2D;
-  const dec = Math.asin(Math.sin(e) * Math.sin(L)) * R2D;
-  const gmst = (18.697374558 + 24.06570982441908 * T) % 24;
-  return { ra, dec, gmst };
+  return {
+    ra: Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)) * R2D,
+    dec: Math.asin(Math.sin(e) * Math.sin(L)) * R2D,
+    gmst: (18.697374558 + 24.06570982441908 * T) % 24,
+  };
 }
 function terminatorPolygon(date) {
   const { ra, dec, gmst } = sunPos(date);
   const pts = [];
   for (let lng = -180; lng <= 180; lng += 1) {
     const ha = (gmst * 15 + lng - ra) * D2R;
-    const lat = Math.atan(-Math.cos(ha) / Math.tan(dec * D2R)) * R2D;
-    pts.push([lat, lng]);
+    pts.push([Math.atan(-Math.cos(ha) / Math.tan(dec * D2R)) * R2D, lng]);
   }
   const darkPole = dec > 0 ? -90 : 90;
   pts.push([darkPole, 180], [darkPole, -180]);
@@ -55,15 +48,15 @@ function terminatorPolygon(date) {
 class FlightMap {
   constructor() {
     this.map = null;
-    this.group = null;
     this.planes = new Map();
-    this.markers = new Map();
-    this._visible = new Set();
+    this.visible = [];        // hexes currently in view
+    this.drawn = [];          // {hex,x,y} from last draw, for hit-testing
     this.selected = null;
     this.terminator = null;
     this.trailLine = null;
-    this.timer = null;
-    this._raf = null;
+    this.canvas = null; this.ctx = null; this.dpr = 1;
+    this.hoverEl = null;
+    this.timer = null; this._raf = null;
   }
 
   async init() {
@@ -82,15 +75,36 @@ class FlightMap {
     L.tileLayer(CONFIG.TILE, { attribution: CONFIG.ATTR, subdomains: 'abcd', maxZoom: 20, noWrap: true }).addTo(this.map);
     this.updateTerminator();
     setInterval(() => this.updateTerminator(), 60000);
-    this.group = L.layerGroup().addTo(this.map);
-    this.map.on('click', () => this.closeInfo());
-    this.map.on('moveend', () => this.syncVisible());
+
+    // One canvas for all planes (pointer-events: none; the map handles clicks)
+    const c = document.createElement('canvas');
+    c.className = 'plane-canvas';
+    this.map.getContainer().appendChild(c);
+    this.canvas = c; this.ctx = c.getContext('2d');
+    this.hoverEl = document.createElement('div');
+    this.hoverEl.className = 'hover-tip'; this.hoverEl.style.display = 'none';
+    this.map.getContainer().appendChild(this.hoverEl);
+    this.sizeCanvas();
+
+    this.map.on('resize', () => this.sizeCanvas());
+    this.map.on('moveend zoomend', () => this.syncVisible());
+    this.map.on('click', (e) => this.onClick(e));
+    this.map.on('mousemove', (e) => this.onHover(e));
+    this.map.on('mouseout', () => { this.hoverEl.style.display = 'none'; });
+  }
+
+  sizeCanvas() {
+    const s = this.map.getSize();
+    this.dpr = window.devicePixelRatio || 1;
+    this.canvas.width = s.x * this.dpr; this.canvas.height = s.y * this.dpr;
+    this.canvas.style.width = s.x + 'px'; this.canvas.style.height = s.y + 'px';
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
   }
 
   updateTerminator() {
     const pts = terminatorPolygon(new Date());
     if (this.terminator) this.terminator.setLatLngs(pts);
-    else this.terminator = L.polygon(pts, { stroke: false, fillColor: '#01030f', fillOpacity: 0.36, interactive: false }).addTo(this.map);
+    else this.terminator = L.polygon(pts, { stroke: false, fillColor: '#01030f', fillOpacity: 0.38, interactive: false }).addTo(this.map);
   }
 
   async fetchFlights() {
@@ -99,9 +113,7 @@ class FlightMap {
       const res = await fetch(`${CONFIG.API}?t=${Date.now()}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const now = Date.now();
-      const seen = new Set();
-
+      const now = Date.now(); const seen = new Set();
       for (const a of data.aircraft || []) {
         if (a.lat == null || a.lon == null) continue;
         seen.add(a.hex);
@@ -121,11 +133,10 @@ class FlightMap {
       }
       for (const [hex, p] of this.planes) {
         if (!seen.has(hex) && now - p.lastSeen > CONFIG.REFRESH_MS * 2) {
-          this.planes.delete(hex); this.removeMarker(hex);
+          this.planes.delete(hex);
           if (this.selected === hex) this.closeInfo();
         }
       }
-
       this.setCount(data.count != null ? data.count : this.planes.size);
       this.setUpdated(data.fetched_at);
       this.setStatus('ok');
@@ -137,61 +148,97 @@ class FlightMap {
     }
   }
 
-  // Pick which planes to render: in current view, capped (highest-altitude first).
   syncVisible() {
-    const b = this.map.getBounds().pad(0.2);
-    let vis = [];
+    const b = this.map.getBounds().pad(0.1);
+    const vis = [];
     for (const [hex, p] of this.planes) if (b.contains([p.curLat, p.curLng])) vis.push(hex);
-    if (vis.length > CONFIG.MAX_MARKERS) {
-      vis.sort((a, c) => (this.planes.get(c).alt || 0) - (this.planes.get(a).alt || 0));
-      vis = vis.slice(0, CONFIG.MAX_MARKERS);
-    }
-    if (this.selected && !vis.includes(this.selected) && this.planes.has(this.selected)) vis.push(this.selected);
-    this._visible = new Set(vis);
-    for (const hex of [...this.markers.keys()]) if (!this._visible.has(hex)) this.removeMarker(hex);
-    this.setShown(this._visible.size);
+    this.visible = vis;
+    this.setShown(vis.length);
   }
 
   startAnimation() {
     const tick = () => {
       const now = Date.now();
-      for (const hex of this._visible) {
+      for (const hex of this.visible) {
         const p = this.planes.get(hex); if (!p) continue;
         const t = Math.min(1, (now - p.t0) / CONFIG.REFRESH_MS);
         p.curLat = p.fromLat + (p.toLat - p.fromLat) * t;
         p.curLng = p.fromLng + (p.toLng - p.fromLng) * t;
-        this.upsertMarker(hex, p);
       }
+      this.draw();
       this._raf = requestAnimationFrame(tick);
     };
     this._raf = requestAnimationFrame(tick);
   }
 
-  upsertMarker(hex, p) {
-    const latlng = [p.curLat, p.curLng];
-    const rot = p.track != null ? p.track : 0;
-    const color = altColor(p.alt);
-    if (this.markers.has(hex)) {
-      const { marker, el } = this.markers.get(hex);
-      marker.setLatLng(latlng);
-      if (el) { el.style.transform = `rotate(${rot}deg)`; el.style.color = color; }
-    } else {
-      const el = document.createElement('div');
-      el.className = 'plane' + (this.selected === hex ? ' sel' : '');
-      el.style.color = color;
-      el.style.transform = `rotate(${rot}deg)`;
-      el.innerHTML = PLANE_SVG;
-      const icon = L.divIcon({ html: el, className: '', iconSize: [20, 20], iconAnchor: [10, 10] });
-      const marker = L.marker(latlng, { icon, zIndexOffset: 400, riseOnHover: true });
-      marker.bindTooltip(p.data.flight || hex.toUpperCase(), { direction: 'top', offset: [0, -7], className: 'plane-tip', opacity: 1 });
-      marker.on('click', (e) => { L.DomEvent.stopPropagation(e); this.showInfo(hex); });
-      this.group.addLayer(marker);
-      this.markers.set(hex, { marker, el });
+  draw() {
+    const ctx = this.ctx, s = this.map.getSize();
+    ctx.clearRect(0, 0, s.x, s.y);
+    const drawn = [];
+    for (const hex of this.visible) {
+      const p = this.planes.get(hex); if (!p) continue;
+      const pt = this.map.latLngToContainerPoint([p.curLat, p.curLng]);
+      if (pt.x < -20 || pt.y < -20 || pt.x > s.x + 20 || pt.y > s.y + 20) continue;
+      this.drawPlane(ctx, pt.x, pt.y, p.track || 0, altColor(p.alt), hex === this.selected);
+      drawn.push({ hex, x: pt.x, y: pt.y });
     }
+    this.drawn = drawn;
   }
 
-  removeMarker(hex) {
-    if (this.markers.has(hex)) { this.group.removeLayer(this.markers.get(hex).marker); this.markers.delete(hex); }
+  drawPlane(ctx, x, y, rotDeg, color, selected) {
+    const s = selected ? 9 : 6.5;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotDeg * D2R);
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(s * 0.16, -s * 0.18);
+    ctx.lineTo(s, s * 0.28);
+    ctx.lineTo(s, s * 0.48);
+    ctx.lineTo(s * 0.16, s * 0.16);
+    ctx.lineTo(s * 0.26, s * 0.78);
+    ctx.lineTo(s * 0.5, s * 0.95);
+    ctx.lineTo(0, s * 0.72);
+    ctx.lineTo(-s * 0.5, s * 0.95);
+    ctx.lineTo(-s * 0.26, s * 0.78);
+    ctx.lineTo(-s * 0.16, s * 0.16);
+    ctx.lineTo(-s, s * 0.48);
+    ctx.lineTo(-s, s * 0.28);
+    ctx.lineTo(-s * 0.16, -s * 0.18);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    if (selected) { ctx.lineWidth = 1.6; ctx.strokeStyle = '#fff'; ctx.stroke(); }
+    ctx.restore();
+  }
+
+  nearest(x, y) {
+    let best = null, bd = 13 * 13;
+    for (const d of this.drawn) {
+      const dx = d.x - x, dy = d.y - y, dist = dx * dx + dy * dy;
+      if (dist < bd) { bd = dist; best = d.hex; }
+    }
+    return best;
+  }
+
+  onClick(e) {
+    const hex = this.nearest(e.containerPoint.x, e.containerPoint.y);
+    if (hex) this.showInfo(hex); else this.closeInfo();
+  }
+
+  onHover(e) {
+    const hex = this.nearest(e.containerPoint.x, e.containerPoint.y);
+    if (hex) {
+      const p = this.planes.get(hex);
+      this.hoverEl.textContent = (p.data.flight || p.data.reg || hex.toUpperCase());
+      this.hoverEl.style.left = (e.containerPoint.x + 12) + 'px';
+      this.hoverEl.style.top = (e.containerPoint.y - 10) + 'px';
+      this.hoverEl.style.display = 'block';
+      L.DomUtil.addClass(this.map.getContainer(), 'plane-hover');
+    } else {
+      this.hoverEl.style.display = 'none';
+      L.DomUtil.removeClass(this.map.getContainer(), 'plane-hover');
+    }
   }
 
   drawTrail(hex) {
@@ -199,14 +246,12 @@ class FlightMap {
     if (!p || !p.trail || p.trail.length < 2) { this.clearTrail(); return; }
     const style = { color: altColor(p.alt), weight: 2.5, opacity: 0.6 };
     if (this.trailLine) this.trailLine.setLatLngs(p.trail).setStyle(style);
-    else { this.trailLine = L.polyline(p.trail, style).addTo(this.map); this.trailLine.bringToFront(); }
+    else this.trailLine = L.polyline(p.trail, style).addTo(this.map);
   }
   clearTrail() { if (this.trailLine) { this.map.removeLayer(this.trailLine); this.trailLine = null; } }
 
   showInfo(hex) {
-    if (this.selected && this.markers.has(this.selected)) this.markers.get(this.selected).el.classList.remove('sel');
     this.selected = hex;
-    if (this.markers.has(hex)) this.markers.get(hex).el.classList.add('sel');
     this.renderInfo(hex);
     this.drawTrail(hex);
     document.getElementById('info').classList.remove('hidden');
@@ -233,7 +278,6 @@ class FlightMap {
   }
 
   closeInfo() {
-    if (this.selected && this.markers.has(this.selected)) this.markers.get(this.selected).el.classList.remove('sel');
     this.selected = null;
     this.clearTrail();
     document.getElementById('info').classList.add('hidden');
@@ -244,8 +288,8 @@ class FlightMap {
     el.className = 'dot ' + ({ ok: 'ok', err: 'err', loading: 'loading' }[s] || '');
     el.title = { ok: 'live', err: 'data error', loading: 'updating' }[s] || '';
   }
-  setCount(n) { const el = document.getElementById('count'); if (el) el.textContent = `· ${n.toLocaleString()} worldwide`; }
-  setShown(n) { const el = document.getElementById('shown'); if (el) el.textContent = n ? `showing ${n.toLocaleString()}` : ''; }
+  setCount(n) { const el = document.getElementById('count'); if (el) el.textContent = `· ${Number(n).toLocaleString()} worldwide`; }
+  setShown(n) { const el = document.getElementById('shown'); if (el) el.textContent = n ? `showing ${Number(n).toLocaleString()}` : ''; }
   setUpdated(iso) {
     const el = document.getElementById('updated'); if (!el || !iso) return;
     el.textContent = new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });

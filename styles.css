@@ -43,10 +43,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 .legend-row { display: flex; align-items: center; gap: 7px; padding: 1.5px 0; }
 .sw { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
 
-.plane { transform-origin: center; transition: transform 0.25s linear; will-change: transform; cursor: pointer; }
-.plane svg { display: block; filter: drop-shadow(0 0 3px currentColor); }
-.plane:hover svg { filter: drop-shadow(0 0 6px currentColor); }
-.plane.sel svg { filter: drop-shadow(0 0 9px #fff); }
+/* All planes are drawn on one canvas for performance */
+.plane-canvas { position: absolute; top: 0; left: 0; z-index: 450; pointer-events: none; }
+.leaflet-container.plane-hover { cursor: pointer; }
+.hover-tip {
+  position: absolute; z-index: 460; pointer-events: none; transform: translateY(-50%);
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 11px; font-weight: 700; padding: 2px 7px; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
 
 .leaflet-tooltip.plane-tip {
   background: var(--panel); color: var(--text); border: 1px solid var(--border);
