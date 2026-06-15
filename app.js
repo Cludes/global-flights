@@ -4,11 +4,11 @@ const CONFIG = {
   CENTER: [20, 10],
   ZOOM: 3, MIN_ZOOM: 2, MAX_ZOOM: 11,
   API: '/api/flights',
-  REFRESH_MS: 100000,        // matches the Worker's 100s OpenSky cache
-  MAX_MARKERS: 1200,         // cap rendered planes (OpenSky returns ~10k worldwide)
+  REFRESH_MS: 25000,         // matches the Worker's 25s edge cache (live keyless feed)
+  MAX_MARKERS: 1200,         // cap rendered planes for performance
   TRAIL_MAX: 30,
   TILE: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  ATTR: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a> | data: <a href="https://opensky-network.org">OpenSky Network</a>',
+  ATTR: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a> | ADS-B: <a href="https://adsb.fi">adsb.fi</a> / <a href="https://airplanes.live">airplanes.live</a>',
 };
 
 const PLANE_SVG =
@@ -215,7 +215,7 @@ class FlightMap {
   renderInfo(hex) {
     const p = this.planes.get(hex); if (!p) return;
     const a = p.data;
-    const call = a.flight || a.hex.toUpperCase();
+    const call = a.flight || a.reg || a.hex.toUpperCase();
     const alt = a.alt != null ? `${a.alt.toLocaleString()} ft` : '-';
     const spd = a.speed != null ? `${Math.round(a.speed)} kt (${Math.round(a.speed * 1.852)} km/h)` : '-';
     const trk = a.track != null ? `${Math.round(a.track)}°` : '-';
@@ -223,7 +223,7 @@ class FlightMap {
       ? `<span class="fi-v">${a.vsi > 0 ? '▲ climbing' : '▼ descending'} ${Math.abs(Math.round(a.vsi))} ft/min</span>` : '<span class="fi-v">level</span>';
     document.getElementById('info-body').innerHTML = `
       <div class="fi-call" style="color:${altColor(a.alt)}">${call}</div>
-      <div class="fi-type">${a.country || 'Unknown origin'}</div>
+      <div class="fi-type">${[a.type, a.reg].filter(Boolean).join(' · ') || 'Unknown aircraft'}</div>
       <div class="fi-row"><span class="fi-k">Altitude</span><span class="fi-v">${alt}</span></div>
       <div class="fi-row"><span class="fi-k">Speed</span><span class="fi-v">${spd}</span></div>
       <div class="fi-row"><span class="fi-k">Heading</span><span class="fi-v">${trk}</span></div>

@@ -1,32 +1,45 @@
 /**
- * Cloudflare Pages Function - GET /api/flights  (GLOBAL via OpenSky Network)
+ * Cloudflare Pages Function - GET /api/flights  (GLOBAL, keyless + live)
  *
- * OpenSky returns the whole planet's traffic in one /states/all call, but needs an
- * OAuth2 client (free account). Set these as Pages secrets:
- *   OPENSKY_CLIENT_ID, OPENSKY_CLIENT_SECRET
- * Until they're set, this returns a "not configured" 500.
+ * OpenSky can't be reached from Cloudflare (522) and its free tier caps at ~90s anyway,
+ * so for a genuinely LIVE global map we sweep a grid of points across the world's busy
+ * regions using the keyless community ADS-B aggregators (which work from Cloudflare),
+ * merge + de-dupe by hex, add CORS, and edge-cache 25s.
  *
- * Edge-cached 100s to stay inside OpenSky's free 4000-credits/day quota
- * (global /states/all ~4 credits/call -> ~860 calls/day worst case).
+ * Coverage is feeder-dependent: excellent over Europe / N America / E Asia / Australia,
+ * sparser over remote oceans and quiet regions.
  */
 
-const TOKEN_URL = 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
-const STATES_URL = 'https://opensky-network.org/api/states/all';
-const CACHE_TTL = 100;
+const UA = 'global-flights/1.0 (+https://global-flights.pages.dev)';
+const CACHE_TTL = 25;
 
-async function getToken(env) {
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: env.OPENSKY_CLIENT_ID,
-    client_secret: env.OPENSKY_CLIENT_SECRET,
-  });
-  const r = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-  if (!r.ok) throw new Error(`token HTTP ${r.status}`);
-  return (await r.json()).access_token;
+// [lat, lon, radius_nm] across the world's busy aviation regions. Kept to a count where
+// points x 2 sources stays under Cloudflare's 50-subrequest/request limit.
+const POINTS = [
+  [53, 0, 250], [48, 11, 250], [40, 0, 250], [52, 24, 250], [39, 32, 250], // Europe
+  [25, 52, 250], [27, 77, 250], [13, 80, 250],                              // Middle East + India
+  [9, 100, 250], [-2, 107, 250], [31, 117, 250], [36, 138, 250],            // SE Asia + E Asia
+  [43, -74, 250], [33, -86, 250], [39, -104, 250], [37, -120, 250],         // North America
+  [-23, -46, 250], [-34, -62, 250],                                         // South America
+  [30, 31, 250], [-29, 25, 250],                                            // Africa
+  [-33, 148, 250],                                                          // Australia
+];
+
+const HOSTS = [
+  (la, lo, d) => `https://opendata.adsb.fi/api/v2/lat/${la}/lon/${lo}/dist/${d}`,
+  (la, lo, d) => `https://api.airplanes.live/v2/point/${la}/${lo}/${d}`,
+];
+
+async function fetchPoint([la, lo, d]) {
+  for (const host of HOSTS) {
+    try {
+      const r = await fetch(host(la, lo, d), { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && Array.isArray(j.ac)) return j.ac;
+    } catch (e) { /* next host */ }
+  }
+  return [];
 }
 
 export async function onRequestOptions() {
@@ -34,46 +47,37 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestGet(context) {
-  const { env } = context;
-  if (!env.OPENSKY_CLIENT_ID || !env.OPENSKY_CLIENT_SECRET) {
-    return cors(json({ error: 'not configured: set OPENSKY_CLIENT_ID + OPENSKY_CLIENT_SECRET (Pages secrets)' }, 500));
-  }
-
   const cache = caches.default;
   const cacheKey = new Request(new URL(context.request.url).origin + '/__global_flights', { method: 'GET' });
   const cached = await cache.match(cacheKey);
   if (cached) return cors(cached);
 
-  let token;
-  try { token = await getToken(env); } catch (e) { return cors(json({ error: 'auth failed', detail: String(e) }, 502)); }
+  const results = await Promise.all(POINTS.map(fetchPoint));
 
-  let up;
-  try { up = await fetch(STATES_URL, { headers: { Authorization: 'Bearer ' + token } }); }
-  catch (e) { return cors(json({ error: 'upstream fetch failed', detail: String(e) }, 502)); }
-  if (!up.ok) return cors(json({ error: `upstream HTTP ${up.status}` }, 502));
-
-  let data;
-  try { data = await up.json(); } catch (e) { return cors(json({ error: 'bad upstream json' }, 502)); }
-
-  const M2FT = 3.28084, MS2KT = 1.94384, MS2FPM = 196.85;
+  const seen = new Set();
   const aircraft = [];
-  for (const s of data.states || []) {
-    const lon = s[5], lat = s[6];
-    if (lat == null || lon == null) continue;
-    if (s[8]) continue; // on_ground
-    const altM = s[13] != null ? s[13] : s[7];
-    aircraft.push({
-      hex: s[0],
-      flight: (s[1] || '').trim() || null,
-      lat, lon,
-      alt: altM != null ? Math.round(altM * M2FT) : null,
-      speed: s[9] != null ? Math.round(s[9] * MS2KT) : null,
-      track: s[10] != null ? s[10] : null,
-      vsi: s[11] != null ? Math.round(s[11] * MS2FPM) : null,
-      squawk: s[14] || null,
-      country: s[2] || null,
-    });
+  for (const arr of results) {
+    for (const a of arr) {
+      if (a.lat == null || a.lon == null || a.alt_baro === 'ground') continue;
+      if (seen.has(a.hex)) continue;
+      seen.add(a.hex);
+      aircraft.push({
+        hex: a.hex,
+        flight: (a.flight || '').trim() || null,
+        reg: a.r || null,
+        type: a.t || null,
+        lat: a.lat,
+        lon: a.lon,
+        alt: typeof a.alt_baro === 'number' ? a.alt_baro : (a.alt_geom ?? null),
+        speed: a.gs ?? null,
+        track: a.track ?? a.true_heading ?? null,
+        vsi: a.baro_rate ?? a.geom_rate ?? null,
+        squawk: a.squawk || null,
+      });
+    }
   }
+
+  if (!aircraft.length) return cors(json({ error: 'all upstream sources failed' }, 502));
 
   const resp = json({ fetched_at: new Date().toISOString(), count: aircraft.length, aircraft });
   resp.headers.set('Cache-Control', `public, max-age=${CACHE_TTL}`);
