@@ -16,13 +16,14 @@ const CACHE_TTL = 25;
 // [lat, lon, radius_nm] across the world's busy aviation regions. Kept to a count where
 // points x 2 sources stays under Cloudflare's 50-subrequest/request limit.
 const POINTS = [
-  [53, 0, 250], [48, 11, 250], [40, 0, 250], [52, 24, 250], [39, 32, 250], // Europe
-  [25, 52, 250], [27, 77, 250], [13, 80, 250],                              // Middle East + India
-  [9, 100, 250], [-2, 107, 250], [31, 117, 250], [36, 138, 250],            // SE Asia + E Asia
-  [43, -74, 250], [33, -86, 250], [39, -104, 250], [37, -120, 250],         // North America
+  [53, 0, 250], [48, 9, 250], [41, 2, 250], [52, 21, 250],                  // Europe
+  [55, 38, 250],                                                            // Russia (Moscow)
+  [25, 52, 250], [28, 77, 250], [13, 78, 250],                              // Middle East + India
+  [13, 100, 250], [0, 104, 250], [31, 118, 250], [36, 138, 250],           // SE Asia + E Asia
+  [43, -74, 250], [33, -86, 250], [39, -98, 250], [37, -119, 250], [50, -110, 250], // North America
   [-23, -46, 250], [-34, -62, 250],                                         // South America
   [30, 31, 250], [-29, 25, 250],                                            // Africa
-  [-33, 148, 250],                                                          // Australia
+  [-33, 149, 250], [-31, 121, 250], [-41, 174, 250],                        // Australia (E + W) + New Zealand
 ];
 
 const HOSTS = [

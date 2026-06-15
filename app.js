@@ -77,9 +77,9 @@ class FlightMap {
     this.map = L.map('map', {
       center: CONFIG.CENTER, zoom: CONFIG.ZOOM,
       minZoom: CONFIG.MIN_ZOOM, maxZoom: CONFIG.MAX_ZOOM, zoomControl: true,
-      worldCopyJump: true,
+      maxBounds: [[-85, -180], [85, 180]], maxBoundsViscosity: 1.0,
     });
-    L.tileLayer(CONFIG.TILE, { attribution: CONFIG.ATTR, subdomains: 'abcd', maxZoom: 20 }).addTo(this.map);
+    L.tileLayer(CONFIG.TILE, { attribution: CONFIG.ATTR, subdomains: 'abcd', maxZoom: 20, noWrap: true }).addTo(this.map);
     this.updateTerminator();
     setInterval(() => this.updateTerminator(), 60000);
     this.group = L.layerGroup().addTo(this.map);
