@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Live aircraft around the world" />
+  <title>Global Flights - Live Aircraft</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <meta name="theme-color" content="#0a0e14" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="map"></div>
+
+    <header id="header">
+      <span class="pulse"></span>
+      <div class="title">
+        <div class="t1">Global Flights</div>
+        <div class="t2">Live aircraft <span id="count">·</span></div>
+      </div>
+      <div class="sep"></div>
+      <span id="status" class="dot" title="connecting"></span>
+      <span id="updated" class="muted"></span>
+      <span id="shown" class="muted"></span>
+    </header>
+
+    <div id="legend">
+      <div class="legend-title">Altitude</div>
+      <div class="legend-row"><span class="sw" style="background:#00e5ff"></span>&lt; 10,000 ft</div>
+      <div class="legend-row"><span class="sw" style="background:#7CFC8A"></span>10–20,000 ft</div>
+      <div class="legend-row"><span class="sw" style="background:#FFD23F"></span>20–30,000 ft</div>
+      <div class="legend-row"><span class="sw" style="background:#FF8C42"></span>30–40,000 ft</div>
+      <div class="legend-row"><span class="sw" style="background:#FF5A8A"></span>&gt; 40,000 ft</div>
+    </div>
+
+    <div id="info" class="hidden">
+      <button id="info-close" onclick="app.closeInfo()">×</button>
+      <div id="info-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="app.js"></script>
+  <script>const app = new FlightMap(); app.init();</script>
+</body>
+</html>
